@@ -1,591 +1,365 @@
 import express from 'express';
 import cors from 'cors';
-import helmet from 'helmet';
-import morgan from 'morgan';
 import dotenv from 'dotenv';
 import axios from 'axios';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import mongoose from "mongoose";
+import mongoose from 'mongoose';
+import { setServers } from 'node:dns/promises';
 
-import { setServers } from "node:dns/promises";
-
-setServers(["1.1.1.1", "8.8.8.8"]);
-
-
-
+setServers(['1.1.1.1', '8.8.8.8']);
 dotenv.config();
 
+const app  = express();
+const PORT = 4001;
 
+app.use(express.json());
+app.use(cors({ origin: '*', methods: ['GET', 'POST'] }));
 
-
-const app = express();
-
-app.use(express.json())
-
-// const {
-//     ELEVENLABS_API_KEY,
-//     ELEVENLABS_AGENT_ID,
-//     ELEVENLABS_AGENT_PHONE_NUMBER_ID,
-//     GEMINI_API_KEY,
-// } = process.env;
-
-// if (!ELEVENLABS_API_KEY || !ELEVENLABS_AGENT_ID || !ELEVENLABS_AGENT_PHONE_NUMBER_ID) {
-//     console.warn('[WARN] Missing ELEVENLABS env vars. Fill .env to enable phone calling.');
-// }
-
-// if (!GEMINI_API_KEY) {
-//     console.warn('[WARN] Missing GEMINI_API_KEY. Fill .env to enable doubt solving.');
-// }
-
-
-// app.use(helmet());
-// app.use(morgan('dev'));
-
-
-// CORS: front-end origin only
-// const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:3000';
-const PORT =  4001;
-// Static hosting
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname  = path.dirname(__filename);
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ─── Keys ─────────────────────────────────────────────────────────────────────
+const ELEVENLABS_KEY = process.env.ELEVENLABS_API_KEY;
+const GEMINI_KEY     = process.env.GEMINI_API_KEY;
 
-app.use(cors({
-  origin: 'http://localhost:4001', // your front-end origin
-  methods: ['GET','POST']
-}));
+if (!ELEVENLABS_KEY) console.error('❌ ELEVENLABS_API_KEY missing in .env');
+if (!GEMINI_KEY)     console.error('❌ GEMINI_API_KEY missing in .env');
 
+// ─── MongoDB ──────────────────────────────────────────────────────────────────
+mongoose.connect(process.env.MONGODB)
+  .then(() => console.log('✅ MongoDB connected'))
+  .catch(err => console.error('❌ MongoDB error:', err));
 
-
-
-// app.use(helmet());
-// app.use(morgan('dev'));
-
-
-
-
-
-const uri = process.env.MONGODB;
-mongoose.connect(uri)
-  .then(() => console.log("Connected to MongoDB"))
-  .catch((error) => console.log("Error connecting to MongoDB:", error));
-
-
-
-
-  const emailSchema = new mongoose.Schema({
-  id: { type: Number, required: true },
-  timestamp: { type: Date, required: true },
+const profileSchema = new mongoose.Schema({
+  conversationId: { type: String, unique: true, sparse: true },
+  timestamp:      { type: Date, default: Date.now },
   profile: {
-    name: { type: String, required: true },
-    location: { type: String, required: true },
-    farmSize: { type: String, required: true },
-    crops: { type: String, required: true },
-    organic: { type: String, required: true },
-    selling: { type: String, required: true },
-    challenges: { type: String, required: true },
-    contact: { type: String, required: true }
+    name:       { type: String, default: '' },
+    location:   { type: String, default: '' },
+    farmSize:   { type: String, default: '' },
+    crops:      { type: String, default: '' },
+    organic:    { type: String, default: '' },
+    selling:    { type: String, default: '' },
+    challenges: { type: String, default: '' },
+    contact:    { type: String, default: '' },
   },
-   type: { type: String, required: true }
+  rawTranscript: { type: String, default: '' },
+  type: { type: String, default: 'profile' },
 });
+const Profile = mongoose.model('Profile', profileSchema);
 
-const Email = mongoose.model('Email', emailSchema);
+// ═══════════════════════════════════════════════════════════════════════════════
+// ELEVENLABS HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
 
-
-
-
-/////////////////////////////////////////////////////////////////////////////////////////////////
-
-
-// const app = express();
-// const PORT = 4001;
-
-// Replace these with your actual keys
-const API_KEY = "sk_fbd27d80bee240d6dfb2e969eafddc22360af0b7e99ac309";
-const CONVERSATION_ID = "conv_7501kgvm1bhzfvtsqcf03ydh7cfv";
-
-// ---------------------------
-// // Helper: Fetch ElevenLabs conversation
-// // ---------------------------
-// async function fetchConversation(conversationId) {
-//   const url = `https://api.elevenlabs.io/v1/convai/conversations/${conversationId}`;
-//   try {
-//     const response = await axios.get(url, {
-//       headers: { "xi-api-key": API_KEY },
-//     });
-
-//     const transcriptList = response.data.transcript || [];
-//     if (!transcriptList.length) return "";
-
-//     let transcriptText = "";
-//     transcriptList.forEach((entry) => {
-//       const role = entry.role === "user" ? "YOU" : "AGENT";
-//       transcriptText += `${role}: ${entry.message}\n------------------------------\n`;
-//     });
-
-//     return transcriptText;
-//   } catch (err) {
-//     console.error("Error fetching conversation:", err.response?.data || err);
-//     return "";
-//   }
-// }
-
-// function extractFarmData(transcript) {
-//   // Here we mock it for simplicity
-//   const profile = {
-//     name: "Navani Krishnan",
-//     location: "Kollam, Kerala",
-//     farmSize: "10 acres",
-//     crops: "bananas",
-//     organic: "no",
-//     selling: "to a broker / middleman",
-//     challenges: "",
-//     contact: "9562664079",
-//   };
-//   return profile;
-// }
-
-// // ---------------------------
-// // API Endpoint
-// // ---------------------------
-// app.get("/farm-profile", async (req, res) => {
-//   const transcript = await fetchConversation(CONVERSATION_ID);
-//   if (!transcript) {
-//     return res.status(500).json({ error: "Could not fetch conversation" });
-//   }
-
-//   const profile = extractFarmData(transcript);
-
-//   const finalOutput = {
-//     id: Date.now(),
-//     timestamp: new Date().toISOString(),
-//     profile: profile,
-//     type: "profile",
-//   };
-
-//   // Return JSON response
-//   res.json(finalOutput);
-//   console.log("Final Output:", finalOutput);
-// });
-
-
-
-/////////////////////////////////////////////////////////////////////////////////////////////
-
-
-
-
-
-
-
-
-app.post('/save', async (req, res) => {
-  // Destructure multiple values from request body
-  const { id, timestamp, profile, type } = req.body;
-  console.log("Hello endpoifffffffffffffffffffffffffffffffnt hit");
-
-  console.log("Received data:", req.body);
-
-  const count = await Email.countDocuments();
-
-  try {
-    const newEmail = new Email({
-       id,
-      timestamp,
-      profile,      // this contains all nested fields
-      type
-    });
-
-    await newEmail.save();
-    res.status(200).json({ success: true, message: 'Survey saved!', total: count + 1 });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: 'Error saving survey' });
-  }
-});
-
-// app.post('/savenew', async (req, res) => {
-//   // Destructure multiple values from request body
-//   const { id, timestamp, profile, type } = req.body;
-//   console.log("Hello endpoifffffffffffffffffffffffffffffffnt hit");
-
-//   console.log("Received data:", req.body);
-
-//   const count = await Email.countDocuments();
-
-//   try {
-//     const newEmail = new Email({
-//        id,
-//       timestamp,
-//       profile,      // this contains all nested fields
-//       type
-//     });
-
-//     await newEmail.save();
-//     res.status(200).json({ success: true, message: 'Survey saved!', total: count + 1 });
-//   } catch (error) {
-//     console.error(error);
-//     res.status(500).json({ success: false, message: 'Error saving survey' });
-//   }
-// });
-
-
-
-
-// Replace these with your actual keys
-// const API_KEY = "sk_fbd27d80bee240d6dfb2e969eafddc22360af0b7e99ac309";
-// const CONVERSATION_ID = "conv_7501kgvm1bhzfvtsqcf03ydh7cfv";
-
-// Helper: Fetch ElevenLabs conversation
-async function fetchConversation(conversationId) {
-  const url = `https://api.elevenlabs.io/v1/convai/conversations/${conversationId}`;
-  try {
-    const response = await axios.get(url, {
-      headers: { "xi-api-key": API_KEY },
-    });
-
-    const transcriptList = response.data.transcript || [];
-    if (!transcriptList.length) return "";
-
-    let transcriptText = "";
-    transcriptList.forEach((entry) => {
-      const role = entry.role === "user" ? "YOU" : "AGENT";
-      transcriptText += `${role}: ${entry.message}\n------------------------------\n`;
-    });
-
-    return transcriptText;
-  } catch (err) {
-    console.error("Error fetching conversation:", err.response?.data || err);
-    return "";
-  }
+// Returns array of conversation objects sorted newest first
+// Each item: { conversation_id, status, call_duration_secs, start_time_unix_secs, ... }
+async function listConversations(pageSize = 10) {
+  const { data } = await axios.get(
+    'https://api.elevenlabs.io/v1/convai/conversations',
+    {
+      headers: { 'xi-api-key': ELEVENLABS_KEY },
+      params:  { page_size: pageSize },
+    }
+  );
+  return data?.conversations || [];
 }
 
-// Mocked function to extract farm data
-function extractFarmData(transcript) {
-  // Here we mock it for simplicity
+// Returns raw transcript array: [{ role: 'user'|'agent', message: '...', time_in_call_secs }]
+async function fetchTranscriptRaw(conversationId) {
+  const { data } = await axios.get(
+    `https://api.elevenlabs.io/v1/convai/conversations/${conversationId}`,
+    { headers: { 'xi-api-key': ELEVENLABS_KEY } }
+  );
   return {
-    name: "Navani Krishnan",
-    location: "Kollam, Kerala",
-    farmSize: "10 acres",
-    crops: "bananas",
-    organic: "no",
-    selling: "to a broker / middleman",
-    challenges: "",
-    contact: "9562664079",
+    transcript: data?.transcript || [],
+    metadata: {
+      status:       data?.status,
+      agentId:      data?.agent_id,
+      startTime:    data?.metadata?.start_time_unix_secs,
+      callDuration: data?.metadata?.call_duration_secs,
+    }
   };
 }
 
-// ---------------------------
-// POST /savenew - Fetch, extract, and save profile
-// ---------------------------
-app.post('/savenew', async (req, res) => {
-  console.log("Hello endpoint hit");
-
-  try {
-    // 1️⃣ Fetch conversation transcript
-
-
-    console.log("qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq");
-    const transcript = await fetchConversation(CONVERSATION_ID);
-    
-    if (!transcript) {
-      return res.status(500).json({ success: false, message: "Failed to fetch conversation" });
-    }
-    console.log("Fetched Transcript:", transcript);
-
-    // 2️⃣ Extract profile data
-    const profile = extractFarmData(transcript);
-
-    // 3️⃣ Generate metadata
-    const id = Date.now();
-    const timestamp = new Date().toISOString();
-    const type = "profile";
-
-    const count = await Email.countDocuments();
-
-    // 4️⃣ Save to MongoDB
-    const newEmail = new Email({ id, timestamp, profile, type });
-    await newEmail.save();
-
-    // 5️⃣ Respond with saved profile
-    res.status(200).json({
-      success: true,
-      message: 'Profile fetched and saved!',
-      total: count + 1,
-      data: { id, timestamp, profile, type }
-    });
-
-    console.log("Profile saved:", { id, timestamp, profile, type });
-
-  } catch (error) {
-    console.error("Error in /savenew:", error);
-    res.status(500).json({ success: false, message: "Error saving profile" });
-  }
-});
-
-
-
-
-
-
-app.post('/savenew1', async (req, res) => {
-  // Directly define the profile data
-  const fixedProfile = {
-  "id": 1770459155464,
-  "timestamp": "2026-02-07T10:12:35.464742Z",
-  "profile": {
-    "name": "Navani Krishnan",
-    "location": "Kollam, Kerala",
-    "farmSize": "10 acres",
-    "crops": "bananas (seasonal)",
-    "organic": "Standard",
-    "selling": "Broker",
-    "challenges": "",
-    "contact": "9562664079"
-  },
-  "type": "profile"
+// Converts transcript array → readable string for Gemini
+function transcriptToText(transcriptArray) {
+  return transcriptArray
+    .map(t => `${t.role === 'user' ? 'FARMER' : 'AGENT'}: ${t.message}`)
+    .join('\n');
 }
 
-  try {
-    const newEmail = new Email(fixedProfile);
-    await newEmail.save();
+// ═══════════════════════════════════════════════════════════════════════════════
+// GEMINI EXTRACTION
+// ═══════════════════════════════════════════════════════════════════════════════
 
-    console.log("Saved fixed profile:", fixedProfile);
-    res.status(200).json({ success: true, message: "Fixed profile saved!", profile: fixedProfile });
-  } catch (error) {
-    console.error("Error saving fixed profile:", error);
-    res.status(500).json({ success: false, message: "Error saving profile", error: error.message });
+async function extractProfileWithGemini(transcriptText) {
+  if (!GEMINI_KEY) return emptyProfile();
+
+  const genAI = new GoogleGenerativeAI(GEMINI_KEY);
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+
+  const prompt = `
+You are extracting structured data from a farmer onboarding phone call transcript.
+
+Transcript:
+"""
+${transcriptText}
+"""
+
+Return ONLY a valid JSON object with exactly these keys (use "" if not mentioned):
+{
+  "name": "",
+  "location": "",
+  "farmSize": "",
+  "crops": "",
+  "organic": "",
+  "selling": "",
+  "challenges": "",
+  "contact": ""
+}
+
+Rules:
+- name: farmer full name
+- location: village/town and state
+- farmSize: land area (acres/hectares)
+- crops: all crops mentioned, comma-separated
+- organic: "yes", "no", or farming method mentioned
+- selling: how/where they sell produce (broker, mandi, direct, export, etc.)
+- challenges: any problems or difficulties mentioned by the farmer
+- contact: phone number if spoken
+
+Return ONLY the JSON. No markdown fences, no explanation.
+`.trim();
+
+  const result  = await model.generateContent(prompt);
+  const rawText = result.response.text().trim();
+
+  // Strip markdown code fences if Gemini adds them
+  const clean = rawText
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i,     '')
+    .replace(/```\s*$/i,     '')
+    .trim();
+
+  try {
+    const p = JSON.parse(clean);
+    return {
+      name:       String(p.name       || ''),
+      location:   String(p.location   || ''),
+      farmSize:   String(p.farmSize   || ''),
+      crops:      String(p.crops      || ''),
+      organic:    String(p.organic    || ''),
+      selling:    String(p.selling    || ''),
+      challenges: String(p.challenges || ''),
+      contact:    String(p.contact    || ''),
+    };
+  } catch (e) {
+    console.error('❌ Gemini JSON parse failed. Raw output:\n', clean);
+    return emptyProfile();
   }
-});
+}
 
+function emptyProfile() {
+  return { name:'', location:'', farmSize:'', crops:'', organic:'', selling:'', challenges:'', contact:'' };
+}
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// CORE PIPELINE
+// ═══════════════════════════════════════════════════════════════════════════════
 
+async function processConversation(conversationId) {
+  // 1. Skip if already in DB
+  const existing = await Profile.findOne({ conversationId });
+  if (existing) {
+    console.log(`⏭️  Already saved: ${conversationId}`);
+    return { skipped: true, reason: 'already_saved', data: existing };
+  }
 
-app.post('/savenew123', async (req, res) => {
+  // 2. Fetch transcript
+  console.log(`📥 Fetching transcript: ${conversationId}`);
+  const { transcript: rawTranscript } = await fetchTranscriptRaw(conversationId);
+
+  if (!rawTranscript.length) {
+    throw new Error(`Transcript empty for ${conversationId} — call may still be processing`);
+  }
+
+  const transcriptText = transcriptToText(rawTranscript);
+  console.log(`📄 Transcript (${rawTranscript.length} messages):\n${transcriptText}\n`);
+
+  // 3. Extract profile with Gemini
+  console.log('🤖 Sending to Gemini for extraction...');
+  const profile = await extractProfileWithGemini(transcriptText);
+  console.log('👤 Extracted:', profile);
+
+  // 4. Save to MongoDB
+  const doc = new Profile({
+    conversationId,
+    profile,
+    rawTranscript: transcriptText,
+    type: 'profile',
+  });
+  await doc.save();
+  console.log('✅ Saved to MongoDB:', conversationId);
+
+  return { skipped: false, data: doc };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ROUTES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── POST /savenew — manual trigger (test from Postman / curl) ─────────────────
+// Body options:
+//   {}                              → picks the absolute latest conversation
+//   { "conversation_id": "conv_X" } → process a specific conversation
+//   { "agent_id": "agent_X" }       → filter by agent, picks latest from that agent
+//   { "sync_all": true }            → process ALL conversations not yet in DB
+app.post('/savenew', async (req, res) => {
+  console.log('\n🔄 POST /savenew', req.body);
+
   try {
-    console.log("Fetching conversation...");
+    // OPTION: sync all unprocessed conversations
+    if (req.body?.sync_all) {
+      const allConvs = await listConversations(50);
+      const results  = [];
 
-    // 1️⃣ Fetch transcript from ElevenLabs
-    const transcript = await fetchConversation(CONVERSATION_ID);
+      for (const conv of allConvs) {
+        try {
+          const r = await processConversation(conv.conversation_id);
+          results.push({ conversation_id: conv.conversation_id, ...r });
+        } catch (e) {
+          results.push({ conversation_id: conv.conversation_id, error: e.message });
+        }
+      }
 
-    if (!transcript) {
-      return res.status(500).json({ success: false, message: "Failed to fetch conversation" });
+      const total = await Profile.countDocuments();
+      return res.json({ success: true, total, results });
     }
 
-    console.log("Transcript fetched:", transcript);
+    // OPTION: specific conversation_id in body
+    let conversationId = req.body?.conversation_id;
 
-    // 2️⃣ Extract farm profile (mocking like your Python structured extraction)
-    const profile = {
-      name: "Navani Krishnan",
-      location: "Kollam, Kerala",
-      farmSize: "10 acres",
-      crops: "bananas (seasonal)",
-      organic: "Standard",
-      selling: "Broker",
-      challenges: "", // fill from transcript if available
-      contact: "9562664079"
-    };
+    // OPTION: latest (optionally filtered by agent_id)
+    if (!conversationId) {
+      const convs = await listConversations(1);
 
-    // 3️⃣ Add metadata
-    const id = Date.now(); // unique id
-    const timestamp = new Date().toISOString();
-    const type = "profile";
+      // filter by agent_id if provided
+      const filtered = req.body?.agent_id
+        ? convs.filter(c => c.agent_id === req.body.agent_id)
+        : convs;
 
-    // 4️⃣ Save to MongoDB
-    const newEmail = new Email(
-        
-    );
-    await newEmail.save();
+      if (!filtered.length) {
+        return res.status(404).json({ success: false, message: 'No conversations found in ElevenLabs' });
+      }
 
-    console.log("Profile saved:", { id, timestamp, profile, type });
+      conversationId = filtered[0].conversation_id;
+    }
 
-    // 5️⃣ Respond with final JSON
-    res.status(200).json({
-      success: true,
-      message: "Profile fetched and saved!",
-      data: { id, timestamp, profile, type }
-    });
+    console.log('Processing:', conversationId);
+    const result = await processConversation(conversationId);
+    const total  = await Profile.countDocuments();
 
-  } catch (error) {
-    console.error("Error in /savenew:", error);
-    res.status(500).json({ success: false, message: "Error saving profile", error: error.message });
+    res.json({ success: true, total, conversationId, ...result });
+
+  } catch (err) {
+    console.error('❌ /savenew error:', err.message);
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
+// ── POST /webhook/elevenlabs — ElevenLabs calls this after every call ──────────
+// Set in ElevenLabs: Agent → Post-call webhook → https://YOUR_DOMAIN/webhook/elevenlabs
+app.post('/webhook/elevenlabs', async (req, res) => {
+  console.log('\n📲 Webhook received from ElevenLabs');
+  console.log('Payload keys:', Object.keys(req.body));
 
+  try {
+    // ElevenLabs sends conversation_id at top level
+    const conversationId = req.body?.conversation_id || req.body?.data?.conversation_id;
 
+    if (!conversationId) {
+      console.warn('⚠️  No conversation_id found in webhook payload:', req.body);
+      return res.status(400).json({ success: false, message: 'Missing conversation_id' });
+    }
 
+    // Respond to ElevenLabs immediately (they have a timeout)
+    res.status(200).json({ success: true, received: conversationId });
 
+    // Process in background
+    processConversation(conversationId).catch(err =>
+      console.error(`❌ Background processing failed for ${conversationId}:`, err.message)
+    );
 
+  } catch (err) {
+    console.error('❌ Webhook error:', err.message);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
+// ── GET /profiles — all saved farmer profiles ──────────────────────────────────
+app.get('/profiles', async (_req, res) => {
+  try {
+    const profiles = await Profile.find().sort({ timestamp: -1 });
+    res.json({ success: true, count: profiles.length, data: profiles });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
+// ── GET /debug/conversations — see what's in ElevenLabs ───────────────────────
+app.get('/debug/conversations', async (req, res) => {
+  try {
+    const convs = await listConversations(10);
+    res.json({
+      count: convs.length,
+      conversations: convs.map(c => ({
+        conversation_id:    c.conversation_id,
+        status:             c.status,
+        call_duration_secs: c.call_duration_secs,
+        started_at:         new Date(c.start_time_unix_secs * 1000).toISOString(),
+        agent_id:           c.agent_id,
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
 
+// ── GET /debug/transcript/:id — see raw transcript ────────────────────────────
+app.get('/debug/transcript/:id', async (req, res) => {
+  try {
+    const { transcript, metadata } = await fetchTranscriptRaw(req.params.id);
+    res.json({
+      conversationId: req.params.id,
+      metadata,
+      messageCount: transcript.length,
+      transcript: transcript.map(t => ({
+        role: t.role,
+        message: t.message,
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
 
+// ── GET /health ────────────────────────────────────────────────────────────────
+app.get('/health', (_req, res) => res.json({ ok: true, time: new Date() }));
 
-
-
-
-
-
-
-
-// Health
-// app.get('/api/health', (_req, res) => res.json({ ok: true }));
-
-// app.post('/api/solve-doubt', async (req, res) => {
-//     try {
-//         if (!GEMINI_API_KEY) {
-//             return res.status(500).json({ error: 'Server misconfigured: GEMINI_API_KEY missing.' });
-//         }
-
-//         const { doubt, conversationHistory = [] } = req.body || {};
-//         if (typeof doubt !== 'string' || !doubt.trim()) {
-//             return res.status(400).json({ error: 'Invalid "doubt". Provide a farming question.' });
-//         }
-
-//         // Check if user is saying thank you (end conversation)
-//         const thankYouPatterns = [
-//             /thank\s*you/i,
-//             /thanks/i,
-//             /bye/i,
-//             /goodbye/i,
-//             /that's\s*all/i,
-//             /that's\s*enough/i,
-//             /no\s*more\s*questions/i
-//         ];
-
-//         const isThankYou = thankYouPatterns.some(pattern => pattern.test(doubt.trim()));
-
-//         if (isThankYou) {
-//             return res.json({
-//                 answer: "You're welcome! Call back anytime for more farming help. Have a great day!",
-//                 isConversationEnd: true
-//             });
-//         }
-
-//         // Initialize the Google Generative AI client (similar to Python version)
-//         const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-
-//         // Get the model - using gemini-1.5-flash (stable available model)
-//         // Configuration optimized for concise phone call responses
-//         const model = genAI.getGenerativeModel({
-//             model: "gemini-1.5-flash",
-//             generationConfig: {
-//                 temperature: 0.3,      // Lower creativity for more focused responses
-//                 topP: 0.8,            // More focused responses
-//                 topK: 20,             // Limited token sampling for brevity
-//                 maxOutputTokens: 200, // Very concise answers for phone simulation
-//             },
-//             // Optimized for quick, direct phone conversation responses
-//         });
-
-//         // Build conversation context
-//         let conversationContext = '';
-//         if (conversationHistory.length > 0) {
-//             conversationContext = '\n\nPrevious conversation:\n';
-//             conversationHistory.forEach(item => {
-//                 conversationContext += `Farmer: ${item.question}\nAdvisor: ${item.answer}\n\n`;
-//             });
-//         }
-
-//         // Construct the prompt for farming-specific context with conversation history
-//         const prompt = `You are an expert agricultural advisor on a phone call with a farmer. Give SHORT, practical answers in 1-2 sentences maximum. Speak like you're talking on the phone - be direct and helpful.${conversationContext}
-
-// Current Farmer's Question: ${doubt}
-
-// Give a brief, actionable answer (max 30 words). If you need more info, ask one short follow-up question:`;
-
-//         // Generate content (similar to Python client.models.generate_content)
-//         const result = await model.generateContent(prompt);
-//         const response = await result.response;
-//         const answer = response.text();
-
-//         if (!answer || answer.trim() === '') {
-//             throw new Error('Empty response from AI model');
-//         }
-
-//         res.json({
-//             answer: answer.trim(),
-//             isConversationEnd: false
-//         });
-//     } catch (err) {
-//         console.error('Gemini API error:', err.message || err);
-
-//         // Fallback response for errors
-//         const fallbackAnswer = "Sorry, connection issue. Can you repeat your question?";
-
-//         res.status(500).json({
-//             error: `Doubt solving failed: ${err.message}`,
-//             fallback: fallbackAnswer
-//         });
-//     }
-// });
-
-// Start a phone call via ElevenLabs ConvAI (server-side only)
-// app.post('/api/start-call', async (req, res) => {
-//     try {
-//         if (!ELEVENLABS_API_KEY || !ELEVENLABS_AGENT_ID || !ELEVENLABS_AGENT_PHONE_NUMBER_ID) {
-//             return res.status(500).json({ error: 'Server misconfigured: ElevenLabs env vars missing.' });
-//         }
-
-//         const { to_number } = req.body || {};
-//         if (typeof to_number !== 'string' || !to_number.replace(/\D/g, '').match(/^\d{10,}$/)) {
-//             return res.status(400).json({ error: 'Invalid "to_number". Provide a real phone number.' });
-//         }
-
-//         const url = 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call';
-
-//         const payload = {
-//             agent_id: ELEVENLABS_AGENT_ID,
-//             agent_phone_number_id: ELEVENLABS_AGENT_PHONE_NUMBER_ID,
-//             to_number
-//         };
-
-//         const { data } = await axios.post(url, payload, {
-//             headers: { 'xi-api-key': ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
-//             timeout: 20000
-//         });
-
-//         // Expected: { success, message, conversation_id, callSid, ... }
-//         res.json(data);
-//     } catch (err) {
-//         const msg = err?.response?.data?.message || err?.response?.data || err.message;
-//         res.status(500).json({ error: `ElevenLabs call failed: ${msg}` });
-//     }
-// });
-
-// // Optional: fetch conversation metadata (status/transcript availability)
-// // NOTE: Endpoint names may evolve; adjust to your account docs if needed.
-// app.get('/api/conversation/:id', async (req, res) => {
-//     try {
-//         const { id } = req.params;
-//         const url = `https://api.elevenlabs.io/v1/convai/conversations/${encodeURIComponent(id)}`;
-
-//         const { data } = await axios.get(url, {
-//             headers: { 'xi-api-key': ELEVENLABS_API_KEY }
-//         });
-
-//         res.json(data);
-//     } catch (err) {
-//         const msg = err?.response?.data?.message || err?.response?.data || err.message;
-//         res.status(500).json({ error: `Failed to fetch conversation: ${msg}` });
-//     }
-// });
-
-// Fallback to index.html (single-page style)
-
-// npm install express axios
-
-
-// ---------------------------
-// Helper: Extract farm profile (mock / replace with AI call if needed)
-// ---------------------------
-
-
+// ─────────────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    
+  console.log(`\n🚀 Server: http://localhost:${PORT}`);
+  console.log('');
+  console.log('  TEST THESE IN ORDER:');
+  console.log('  1. GET  /debug/conversations          → confirm ElevenLabs API key works');
+  console.log('  2. GET  /debug/transcript/<conv_id>   → confirm transcript is readable');
+  console.log('  3. POST /savenew                      → process latest → save to MongoDB');
+  console.log('  4. POST /savenew  { sync_all: true }  → process ALL past conversations');
+  console.log('  5. GET  /profiles                     → see everything saved in MongoDB');
+  console.log('');
+  console.log('  AUTO: POST /webhook/elevenlabs         → ElevenLabs calls this after each call');
 });
